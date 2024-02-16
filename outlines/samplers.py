@@ -1,3 +1,16 @@
+# Copyright 2020- The Blackjax Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import math
 from typing import Callable, Optional, Protocol, Tuple
 
@@ -308,3 +321,81 @@ class BeamSearchSampler:
 
 
 beam_search = BeamSearchSampler
+
+
+def multinomial_resampling(
+    rng: torch.Generator, weights: torch.Tensor, num_samples: int
+):
+    """Standard multinomial resampling for Sequential Monte Carlo.
+
+    This resampling function has very high variance.
+
+    Adapted from the Blackjax library. TODO add licence
+    https://github.com/blackjax-devs/blackjax/blob/main/blackjax/smc/resampling.py
+
+    Parameters
+    ----------
+    rng
+        `torch.Generator` instance to use for resampling the particles
+    weights
+        The weights of the particles
+    num_samples
+        The number of particles to sample
+
+    Returns
+    -------
+    The ids of the particles to keep.
+
+    """
+    raise NotImplementedError
+
+
+class SMCSampler:
+    """Sequential Monte Carlo sampling algorithm.
+
+    Attributes
+    ----------
+    samples
+        The number of samples taken for each input sequence.
+    ess_threshold
+        The Effective Sample Size threshold below which the particles are
+        resampled.
+
+    """
+
+    def __init__(
+        self,
+        particles: int = 1,
+        ess_threshold=0.5,
+        resampling_fn=multinomial_resampling,
+    ):
+        self.samples = particles
+        self.ess_threshold = ess_threshold
+        self.resampling_fn = multinomial_resampling
+
+    def __call__(
+        self,
+        next_token_logits: torch.DoubleTensor,
+        sequence_weights: torch.DoubleTensor,
+        rng: torch.Generator,
+    ) -> Tuple[torch.DoubleTensor, torch.DoubleTensor, torch.DoubleTensor]:
+        logprobs = torch.nn.functional.log_softmax(next_token_logits, dim=-1)
+        weights = logprobs + sequence_weights.unsqueeze(1).expand_as(next_token_logits)
+
+        sum_weights = torch.logsumpexp(weights, dim=-1)
+        normalized_weights = weights - sum_weights
+
+        # Flatten scores to (n_batch, n_samples * vocab_size)
+        # and find the top-k weights for each batch.
+        batch_size = next_token_logits.shape[0] // self.samples
+        vocab_size = next_token_logits.shape[-1]
+        weights = weights.view(batch_size, self.samples * vocab_size)
+
+        # Check whether particles for each needs to be resampled
+        log_ess = -torch.logsumexp(2 * normalized_weights) - torch.log(self.samples)
+        _ = log_ess < torch.log(self.ess_threshold)
+
+        raise NotImplementedError
+
+
+smc = SMCSampler
